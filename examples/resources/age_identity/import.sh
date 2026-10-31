@@ -1,0 +1,3 @@
+# The import ID is the identity itself. Prefer an import block fed from a
+# sensitive source, so the key doesn't end up in your shell history.
+tofu import age_identity.backup AGE-SECRET-KEY-1...

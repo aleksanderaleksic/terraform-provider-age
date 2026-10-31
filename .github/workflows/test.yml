@@ -1,0 +1,77 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # `go generate` runs `tofu fmt` on the examples.
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v2.0.2
+        with:
+          tofu_version: "1.13.1"
+          tofu_wrapper: false
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Check generated docs are up to date
+        run: |
+          go generate ./...
+          git diff --exit-code -- docs/
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tofu:
+          - "1.12.6"
+          - "1.13.1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v2.0.2
+        with:
+          tofu_version: ${{ matrix.tofu }}
+          # The wrapper script mangles stdout, which terraform-plugin-testing parses.
+          tofu_wrapper: false
+
+      # terraform-plugin-testing drives the binary in TF_ACC_TERRAFORM_PATH (it
+      # would download Terraform otherwise), and the provider address is pointed
+      # at the OpenTofu registry to match.
+      - name: Acceptance tests
+        run: TF_ACC_TERRAFORM_PATH="$(command -v tofu)" go test ./... -count=1 -v
+        env:
+          TF_ACC_PROVIDER_HOST: registry.opentofu.org
+          TF_ACC_PROVIDER_NAMESPACE: hashicorp
