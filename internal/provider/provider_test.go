@@ -1,16 +1,11 @@
 package provider
 
 import (
-	"bytes"
-	"encoding/base64"
 	"fmt"
-	"io"
 	"regexp"
-	"strings"
 	"testing"
 
 	"filippo.io/age"
-	"filippo.io/age/armor"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -138,7 +133,7 @@ resource "age_encrypted" "test" {
 }
 
 // checkDecrypts decrypts both ciphertext encodings with the identity in state
-// and compares the result with the plaintext.
+// and compares the result with the plaintext (see decryptsTo).
 func checkDecrypts(identityAddr, encryptedAddr string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		mod := s.RootModule()
@@ -147,29 +142,7 @@ func checkDecrypts(identityAddr, encryptedAddr string) resource.TestCheckFunc {
 			return err
 		}
 		enc := mod.Resources[encryptedAddr].Primary.Attributes
-
-		binary, err := base64.StdEncoding.DecodeString(enc["ciphertext_base64"])
-		if err != nil {
-			return err
-		}
-		sources := map[string]io.Reader{
-			"ciphertext_base64": bytes.NewReader(binary),
-			"ciphertext":        armor.NewReader(strings.NewReader(enc["ciphertext"])),
-		}
-		for name, src := range sources {
-			r, err := age.Decrypt(src, identity)
-			if err != nil {
-				return fmt.Errorf("decrypting %s: %w", name, err)
-			}
-			got, err := io.ReadAll(r)
-			if err != nil {
-				return err
-			}
-			if string(got) != plaintext {
-				return fmt.Errorf("%s decrypted to %q, want %q", name, got, plaintext)
-			}
-		}
-		return nil
+		return decryptsTo(identity, enc["ciphertext"], enc["ciphertext_base64"])
 	}
 }
 
