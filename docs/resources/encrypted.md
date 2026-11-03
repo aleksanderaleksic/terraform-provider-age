@@ -50,7 +50,7 @@ output "encrypted_data_key" {
 ### Required
 
 - `plaintext` (String, Sensitive) The data to encrypt. Changing it re-encrypts.
-- `recipients` (List of String) age X25519 recipients (`age1...`). Any of the matching identities can decrypt. Changing the list re-encrypts.
+- `recipients` (List of String) age recipients, X25519 (`age1...`) or post-quantum (`age1pq1...`). Any of the matching identities can decrypt. The two kinds can't be mixed in one list. Changing the list re-encrypts.
 
 ### Read-Only
 

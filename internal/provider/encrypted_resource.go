@@ -11,7 +11,6 @@ import (
 
 	"filippo.io/age"
 	"filippo.io/age/armor"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
@@ -64,7 +63,8 @@ func (r *encryptedResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"recipients": schema.ListAttribute{
-				MarkdownDescription: "age X25519 recipients (`age1...`). Any of the matching identities can decrypt. " +
+				MarkdownDescription: "age recipients, X25519 (`age1...`) or post-quantum (`age1pq1...`). " +
+					"Any of the matching identities can decrypt. The two kinds can't be mixed in one list. " +
 					"Changing the list re-encrypts.",
 				ElementType:   types.StringType,
 				Required:      true,
@@ -86,23 +86,7 @@ func (r *encryptedResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 }
 
 func (r *encryptedResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
-	var recipients []types.String
-	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("recipients"), &recipients)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	if recipients != nil && len(recipients) == 0 {
-		resp.Diagnostics.AddAttributeError(path.Root("recipients"), "No recipients", "At least one recipient is required.")
-	}
-	for i, rcpt := range recipients {
-		if rcpt.IsUnknown() || rcpt.IsNull() {
-			continue
-		}
-		if _, err := age.ParseX25519Recipient(rcpt.ValueString()); err != nil {
-			resp.Diagnostics.AddAttributeError(path.Root("recipients").AtListIndex(i), "Invalid recipient", err.Error())
-		}
-	}
+	resp.Diagnostics.Append(validateRecipients(ctx, req.Config)...)
 }
 
 func (r *encryptedResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -118,22 +102,15 @@ func (r *encryptedResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	ciphertext, err := encrypt([]byte(plan.Plaintext.ValueString()), rcptStrings)
+	out, err := encryptToOutputs([]byte(plan.Plaintext.ValueString()), rcptStrings)
 	if err != nil {
 		resp.Diagnostics.AddError("Encrypting with age", err.Error())
 		return
 	}
 
-	armored, err := armorEncode(ciphertext)
-	if err != nil {
-		resp.Diagnostics.AddError("Armoring ciphertext", err.Error())
-		return
-	}
-
-	sum := sha256.Sum256(ciphertext)
-	plan.ID = types.StringValue(hex.EncodeToString(sum[:]))
-	plan.Ciphertext = types.StringValue(armored)
-	plan.CiphertextBase64 = types.StringValue(base64.StdEncoding.EncodeToString(ciphertext))
+	plan.ID = types.StringValue(out.id)
+	plan.Ciphertext = types.StringValue(out.armored)
+	plan.CiphertextBase64 = types.StringValue(out.base64)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -151,6 +128,33 @@ func (r *encryptedResource) Update(ctx context.Context, req resource.UpdateReque
 func (r *encryptedResource) Delete(context.Context, resource.DeleteRequest, *resource.DeleteResponse) {
 }
 
+// encryptedOutputs are the computed attributes shared by the resource and the
+// ephemeral resource.
+type encryptedOutputs struct {
+	id      string
+	armored string
+	base64  string
+}
+
+func encryptToOutputs(plaintext []byte, recipients []string) (encryptedOutputs, error) {
+	ciphertext, err := encrypt(plaintext, recipients)
+	if err != nil {
+		return encryptedOutputs{}, err
+	}
+
+	armored, err := armorEncode(ciphertext)
+	if err != nil {
+		return encryptedOutputs{}, fmt.Errorf("armoring ciphertext: %w", err)
+	}
+
+	sum := sha256.Sum256(ciphertext)
+	return encryptedOutputs{
+		id:      hex.EncodeToString(sum[:]),
+		armored: armored,
+		base64:  base64.StdEncoding.EncodeToString(ciphertext),
+	}, nil
+}
+
 func encrypt(plaintext []byte, recipients []string) ([]byte, error) {
 	if len(recipients) == 0 {
 		return nil, fmt.Errorf("at least one recipient is required")
@@ -158,7 +162,7 @@ func encrypt(plaintext []byte, recipients []string) ([]byte, error) {
 
 	rcpts := make([]age.Recipient, 0, len(recipients))
 	for _, s := range recipients {
-		rcpt, err := age.ParseX25519Recipient(s)
+		rcpt, err := parseRecipient(s)
 		if err != nil {
 			return nil, fmt.Errorf("parsing recipient %q: %w", s, err)
 		}
